@@ -188,6 +188,15 @@ cython_debug/
 #   option (not recommended) you can uncomment the following to ignore the entire idea folder.
 # .idea/
 
+# Local ECG data, processed signals, model weights, and generated artifacts
+data/
+models/
+figures/
+reports/
+*.npy
+*.pt
+*.pth
+
 # Abstra
 #   Abstra is an AI-powered process automation framework.
 #   Ignore directories containing user credentials, local state, and settings.
