@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from src.engine import run_epoch
+from src.engine import evaluate_predictions, find_optimal_thresholds, run_epoch
 from src.data import PTBXLMultiModalDataset, assert_patient_disjoint
 from src.models import BidirectionalGRU, InceptionBiGRUClassifier, InceptionModule1D
 
@@ -146,3 +146,37 @@ def test_run_epoch_train_and_validation():
         "subset_accuracy",
     ):
         assert 0.0 <= detailed_result[metric] <= 1.0
+
+
+def test_per_label_threshold_tuning_and_evaluation():
+    targets = np.array(
+        [
+            [1, 0, 0, 0, 0],
+            [0, 1, 0, 0, 1],
+            [0, 1, 1, 0, 0],
+            [0, 0, 1, 1, 1],
+        ],
+        dtype=np.float32,
+    )
+    probabilities = np.array(
+        [
+            [0.85, 0.10, 0.15, 0.10, 0.05],
+            [0.20, 0.35, 0.10, 0.15, 0.25],
+            [0.10, 0.40, 0.70, 0.20, 0.10],
+            [0.15, 0.10, 0.65, 0.30, 0.30],
+        ],
+        dtype=np.float32,
+    )
+    tuned_thresholds = find_optimal_thresholds(targets, probabilities)
+    assert set(tuned_thresholds) == {"NORM", "MI", "STTC", "CD", "HYP"}
+    assert tuned_thresholds["MI"] < 0.5
+    assert tuned_thresholds["HYP"] < 0.5
+
+    default_eval = evaluate_predictions(
+        targets, probabilities, detailed_metrics=True, threshold=0.5
+    )
+    tuned_eval = evaluate_predictions(
+        targets, probabilities, detailed_metrics=True, threshold=tuned_thresholds
+    )
+    assert tuned_eval["macro_recall"] > default_eval["macro_recall"]
+    assert tuned_eval["per_label"]["MI"]["threshold"] == tuned_thresholds["MI"]

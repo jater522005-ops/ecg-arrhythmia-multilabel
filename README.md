@@ -2,7 +2,7 @@
 
 Dự án phân loại đa nhãn ECG 12 chuyển đạo từ bộ dữ liệu [PTB-XL](https://physionet.org/content/ptb-xl/), thực hiện trong khuôn khổ môn Học máy trong Y tế.
 
-Pipeline gồm khám phá dữ liệu, chuẩn hóa ECG theo từng bản ghi và từng chuyển đạo, kết hợp ECG với thông tin tuổi/giới tính, rồi huấn luyện và đánh giá mô hình trên năm nhóm chẩn đoán PTB-XL.
+Pipeline gồm khám phá dữ liệu, chuẩn hóa ECG theo từng bản ghi và từng chuyển đạo, kết hợp ECG với thông tin tuổi/giới tính, rồi huấn luyện, đánh giá và giải thích mô hình (XAI) trên năm nhóm chẩn đoán PTB-XL.
 
 ## Cấu trúc project
 
@@ -12,9 +12,10 @@ ecg-arrhythmia-multilabel/
 │   └── agents/
 │       └── ptbxl-eda.agent.md       # Hướng dẫn agent hỗ trợ EDA PTB-XL
 ├── notebooks/
-│   ├── 1_eda.ipynb                  # Khám phá metadata và phân bố nhãn
-│   ├── 2_preprocessing.ipynb        # Tạo nhãn, kiểm tra split, chuẩn hóa ECG/clinical
-│   └── 3_model_training_setup.ipynb # Dataset, model, train/validation/test
+│   ├── 1_eda.ipynb                          # Khám phá metadata và phân bố nhãn
+│   ├── 2_preprocessing.ipynb                # Tạo nhãn, kiểm tra split, chuẩn hóa ECG/clinical
+│   ├── 3_model_training_and_evaluation.ipynb # Dataset, model, train/validation/test và tối ưu ngưỡng
+│   └── 4_xai_and_results_visualization.ipynb # Trực quan hóa kết quả (ROC/PR, Confusion Matrix) và XAI (1D Grad-CAM, Lead Saliency)
 ├── src/
 │   ├── data.py                      # Dataset đa phương thức và kiểm tra leakage
 │   ├── engine.py                    # Vòng lặp train/evaluation và metrics
@@ -45,7 +46,8 @@ Các thư mục `data/`, `models/`, `figures/` và `reports/` được loại kh
 - **Chia tập:** fold 1–8 cho train, fold 9 cho validation, fold 10 cho test; kiểm tra tách biệt theo patient và loại patient thuộc nhóm form/rhythm-only khỏi các split dùng cho modeling.
 - **Kiến trúc:** InceptionTime encoder + bidirectional GRU, kết hợp ECG embedding với clinical features.
 - **Chọn checkpoint:** validation macro AUPRC. Test set chỉ dùng cho đánh giá cuối cùng.
-- **Metrics:** AUROC, AUPRC, Precision, Recall, F1 và Accuracy; các metrics phụ thuộc threshold dùng ngưỡng mặc định 0,5.
+- **Metrics:** AUROC, AUPRC, Precision, Recall, F1 và Accuracy; hỗ trợ cả ngưỡng mặc định 0,5 lẫn tối ưu ngưỡng theo từng nhãn (Threshold Tuning ưu tiên Recall trên tập validation).
+- **XAI & Phân tích kết quả:** 1D Grad-CAM trên tầng InceptionTime cuối, ma trận độ nhạy theo 12 chuyển đạo (Input Gradient Saliency) và đóng góp của nhánh lâm sàng (Multimodal Late Fusion).
 
 ## Cài đặt
 
@@ -92,7 +94,8 @@ Chạy notebook theo thứ tự trong VS Code/Jupyter:
 
 1. [`notebooks/1_eda.ipynb`](notebooks/1_eda.ipynb) — xem schema metadata, phân bố đặc trưng và nhãn.
 2. [`notebooks/2_preprocessing.ipynb`](notebooks/2_preprocessing.ipynb) — tạo nhãn, audit split, chuẩn hóa ECG/clinical và ghi artifact vào `data/processed/`.
-3. [`notebooks/3_model_training_setup.ipynb`](notebooks/3_model_training_setup.ipynb) — tạo Dataset/DataLoader, train, chọn checkpoint theo validation macro AUPRC và đánh giá trên test.
+3. [`notebooks/3_model_training_and_evaluation.ipynb`](notebooks/3_model_training_and_evaluation.ipynb) — tạo Dataset/DataLoader, train, chọn checkpoint theo validation macro AUPRC, đánh giá trên test và tối ưu ngưỡng quyết định theo từng nhãn.
+4. [`notebooks/4_xai_and_results_visualization.ipynb`](notebooks/4_xai_and_results_visualization.ipynb) — xuất bảng Classification Report, vẽ đường cong ROC/PR, Multi-label Confusion Matrix, ma trận đồng xuất hiện bệnh lý và giải thích mô hình bằng 1D Grad-CAM & Input Gradient Saliency.
 
 Notebook tiền xử lý tạo lại mảng chuẩn hóa khoảng 5 GB nếu chạy cell materialization; nếu đã có artifact hợp lệ thì không cần chạy lại cell đó. Notebook train yêu cầu các tệp sau:
 
@@ -104,7 +107,7 @@ data/processed/
 └── ptbxl_clinical_normalization_stats.json
 ```
 
-Full training trong notebook yêu cầu CUDA; cấu hình CPU chỉ dùng để smoke-test forward pass của mô hình, không dùng để chạy toàn bộ training.
+Full training trong notebook yêu cầu CUDA; khi đã có sẵn checkpoint `models/checkpoints/inception_bigru_best.pt`, notebook mặc định bỏ qua bước huấn luyện (`FORCE_RETRAIN = False`) để chạy thẳng đánh giá và tối ưu ngưỡng.
 
 ## Chạy tests
 

@@ -14,6 +14,19 @@ SUPERCLASSES = ("NORM", "MI", "STTC", "CD", "HYP")
 CLINICAL_FEATURES = ("age_z", "sex")
 
 
+def _require_integer_like(values: pd.Series, column_name: str) -> pd.Series:
+    """Convert a column to integer dtype while rejecting missing or fractional values."""
+    converted = pd.to_numeric(values, errors="raise")
+    if converted.isna().any():
+        raise ValueError(f"{column_name} values must not be missing.")
+    numeric = converted.to_numpy(dtype=np.float64)
+    if not np.all(np.isfinite(numeric)):
+        raise ValueError(f"{column_name} values must be finite.")
+    if not np.allclose(numeric, np.round(numeric), rtol=0.0, atol=0.0):
+        raise ValueError(f"{column_name} values must be integer-like.")
+    return converted.astype(np.int64)
+
+
 def assert_patient_disjoint(*partitions: pd.DataFrame) -> None:
     """Raise when patient IDs overlap between any supplied partitions."""
     patient_sets = []
@@ -56,15 +69,34 @@ class PTBXLMultiModalDataset(Dataset[dict[str, Any]]):
             raise ValueError(f"Split records are missing columns: {sorted(missing)}")
         if records.empty:
             raise ValueError("A model split must contain at least one ECG.")
-        if records["ecg_id"].isna().any() or records["ecg_id"].duplicated().any():
-            raise ValueError("Split ecg_id values must be present and unique.")
+
+        records = records.copy()
+        records["ecg_id"] = _require_integer_like(records["ecg_id"], "ecg_id")
+        records["patient_id"] = _require_integer_like(records["patient_id"], "patient_id")
+        if records["ecg_id"].duplicated().any():
+            raise ValueError("Split ecg_id values must be unique.")
 
         self.index = pd.read_csv(signal_index_path)
         clinical = pd.read_csv(clinical_features_path)
-        if self.index["ecg_id"].isna().any() or self.index["ecg_id"].duplicated().any():
-            raise ValueError("Signal index ecg_id values must be present and unique.")
-        if clinical["ecg_id"].isna().any() or clinical["ecg_id"].duplicated().any():
-            raise ValueError("Clinical ecg_id values must be present and unique.")
+        self.index["ecg_id"] = _require_integer_like(self.index["ecg_id"], "signal index ecg_id")
+        self.index["patient_id"] = _require_integer_like(
+            self.index["patient_id"], "signal index patient_id"
+        )
+        for column_name in ("strat_fold", "array_position"):
+            converted = pd.to_numeric(self.index[column_name], errors="raise")
+            if converted.isna().any():
+                raise ValueError(f"{column_name} values must not be missing.")
+            numeric = converted.to_numpy(dtype=np.float64)
+            if not np.all(np.isfinite(numeric)):
+                raise ValueError(f"{column_name} values must be finite.")
+            if not np.allclose(numeric, np.round(numeric), rtol=0.0, atol=0.0):
+                raise ValueError(f"{column_name} values must be integer-like.")
+            self.index[column_name] = converted.astype(np.int64)
+        if self.index["ecg_id"].duplicated().any():
+            raise ValueError("Signal index ecg_id values must be unique.")
+        clinical["ecg_id"] = _require_integer_like(clinical["ecg_id"], "clinical ecg_id")
+        if clinical["ecg_id"].duplicated().any():
+            raise ValueError("Clinical ecg_id values must be unique.")
 
         required_index_columns = {
             "ecg_id",
