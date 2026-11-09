@@ -171,3 +171,82 @@ class InceptionBiGRUClassifier(nn.Module):
         ecg_embedding = self.attention_pool(sequence)
         clinical_embedding = self.clinical_encoder(clinical)
         return self.classifier(torch.cat((ecg_embedding, clinical_embedding), dim=1))
+
+
+class ResidualBlock1D(nn.Module):
+    """Standard 1D residual block with two convolutions and shortcut projection."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 7,
+        stride: int = 1,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv1 = nn.Conv1d(
+            in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=False
+        )
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.act = nn.ReLU(inplace=True)
+        self.drop = nn.Dropout(dropout)
+        self.conv2 = nn.Conv1d(
+            out_channels, out_channels, kernel_size=kernel_size, stride=1, padding=padding, bias=False
+        )
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.shortcut = (
+            nn.Identity()
+            if in_channels == out_channels and stride == 1
+            else nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels),
+            )
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.shortcut(x)
+        out = self.act(self.bn1(self.conv1(x)))
+        out = self.drop(out)
+        out = self.bn2(self.conv2(out))
+        return self.act(out + residual)
+
+
+class ResNet1DClassifier(nn.Module):
+    """ECG-only 1D ResNet baseline classifier (without BiGRU or clinical features)."""
+
+    def __init__(
+        self,
+        num_leads: int = 12,
+        num_labels: int = len(SUPERCLASSES),
+        base_channels: int = 32,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        if num_leads != 12:
+            raise ValueError("This PTB-XL baseline expects 12 ECG leads.")
+        self.stem = nn.Sequential(
+            nn.Conv1d(num_leads, base_channels, kernel_size=15, stride=2, padding=7, bias=False),
+            nn.BatchNorm1d(base_channels),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
+        )
+        self.layer1 = ResidualBlock1D(base_channels, base_channels, kernel_size=7, stride=1, dropout=dropout)
+        self.layer2 = ResidualBlock1D(base_channels, base_channels * 2, kernel_size=7, stride=2, dropout=dropout)
+        self.layer3 = ResidualBlock1D(base_channels * 2, base_channels * 4, kernel_size=5, stride=2, dropout=dropout)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.classifier = nn.Linear(base_channels * 4, num_labels)
+
+    def forward(self, ecg: torch.Tensor, clinical: torch.Tensor | None = None) -> torch.Tensor:
+        if ecg.ndim != 3 or ecg.shape[1:] != (12, 5000):
+            raise ValueError(
+                f"Expected ECG shape (batch, 12, 5000); got {tuple(ecg.shape)}."
+            )
+        features = self.stem(ecg)
+        features = self.layer1(features)
+        features = self.layer2(features)
+        features = self.layer3(features)
+        pooled = self.pool(features).squeeze(-1)
+        return self.classifier(pooled)
+
