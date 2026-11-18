@@ -102,8 +102,20 @@ class AttentionPooling(nn.Module):
         return torch.sum(sequence * weights.unsqueeze(-1), dim=1)
 
 
+class MeanTemporalPooling(nn.Module):
+    """Parameter-free temporal average pooling over sequence length (used in ablation)."""
+
+    def forward(self, sequence: torch.Tensor) -> torch.Tensor:
+        return sequence.mean(dim=1)
+
+
 class InceptionBiGRUClassifier(nn.Module):
-    """Five-label ECG classifier with `[age_z, sex]` clinical late fusion."""
+    """Five-label ECG classifier with `[age_z, sex]` clinical late fusion.
+
+    Supports exact-parent ablation by selectively disabling individual architectural
+    blocks (`use_inception`, `use_bigru`, `use_attention_pool`, `use_clinical`) while
+    preserving parent tensor interfaces.
+    """
 
     def __init__(
         self,
@@ -113,6 +125,10 @@ class InceptionBiGRUClassifier(nn.Module):
         branch_channels: int = 32,
         gru_hidden_size: int = 96,
         gru_layers: int = 2,
+        use_inception: bool = True,
+        use_bigru: bool = True,
+        use_attention_pool: bool = True,
+        use_clinical: bool = True,
     ) -> None:
         super().__init__()
         if num_leads != 12:
@@ -122,16 +138,28 @@ class InceptionBiGRUClassifier(nn.Module):
         if num_labels != len(SUPERCLASSES):
             raise ValueError(f"Expected {len(SUPERCLASSES)} superclass outputs.")
 
+        self.use_inception = use_inception
+        self.use_bigru = use_bigru
+        self.use_attention_pool = use_attention_pool
+        self.use_clinical = use_clinical
+
         self.stem = nn.Sequential(
             nn.Conv1d(num_leads, 32, kernel_size=15, padding=7, bias=False),
             nn.BatchNorm1d(32),
             nn.ReLU(inplace=True),
         )
-        self.inception = nn.Sequential(
-            InceptionModule1D(32, branch_channels),
-            InceptionModule1D(branch_channels * 4, branch_channels),
-            InceptionModule1D(branch_channels * 4, branch_channels),
-        )
+        if use_inception:
+            self.inception: nn.Module = nn.Sequential(
+                InceptionModule1D(32, branch_channels),
+                InceptionModule1D(branch_channels * 4, branch_channels),
+                InceptionModule1D(branch_channels * 4, branch_channels),
+            )
+        else:
+            self.inception = nn.Sequential(
+                nn.Conv1d(32, branch_channels * 4, kernel_size=7, padding=3, bias=False),
+                nn.BatchNorm1d(branch_channels * 4),
+                nn.ReLU(inplace=True),
+            )
         self.downsample = nn.Sequential(
             nn.Conv1d(branch_channels * 4, 128, kernel_size=5, stride=2, padding=2, bias=False),
             nn.BatchNorm1d(128),
@@ -140,37 +168,56 @@ class InceptionBiGRUClassifier(nn.Module):
             nn.BatchNorm1d(192),
             nn.ReLU(inplace=True),
         )
-        self.sequence_model = BidirectionalGRU(
-            d_model=192,
-            hidden_size=gru_hidden_size,
-            num_layers=gru_layers,
-        )
-        self.attention_pool = AttentionPooling(d_model=192)
-        self.clinical_encoder = nn.Sequential(
-            nn.Linear(clinical_features, 16),
-            nn.ReLU(inplace=True),
-        )
-        self.classifier = nn.Linear(192 + 16, num_labels)
+        if use_bigru:
+            self.sequence_model: nn.Module = BidirectionalGRU(
+                d_model=192,
+                hidden_size=gru_hidden_size,
+                num_layers=gru_layers,
+            )
+        else:
+            self.sequence_model = nn.Identity()
+
+        if use_attention_pool:
+            self.attention_pool: nn.Module = AttentionPooling(d_model=192)
+        else:
+            self.attention_pool = MeanTemporalPooling()
+
+        if use_clinical:
+            self.clinical_encoder: nn.Module | None = nn.Sequential(
+                nn.Linear(clinical_features, 16),
+                nn.ReLU(inplace=True),
+            )
+            classifier_in_dim = 192 + 16
+        else:
+            self.clinical_encoder = None
+            classifier_in_dim = 192
+
+        self.classifier = nn.Linear(classifier_in_dim, num_labels)
 
     def forward(
-        self, ecg: torch.Tensor, clinical: torch.Tensor
+        self, ecg: torch.Tensor, clinical: torch.Tensor | None = None
     ) -> torch.Tensor:
         if ecg.ndim != 3 or ecg.shape[1:] != (12, 5000):
             raise ValueError(
                 f"Expected ECG shape (batch, 12, 5000); got {tuple(ecg.shape)}."
-            )
-        if clinical.ndim != 2 or clinical.shape != (ecg.shape[0], 2):
-            raise ValueError(
-                f"Expected clinical shape ({ecg.shape[0]}, 2); "
-                f"got {tuple(clinical.shape)}."
             )
         features = self.stem(ecg)
         features = self.inception(features)
         features = self.downsample(features)
         sequence = self.sequence_model(features.transpose(1, 2))
         ecg_embedding = self.attention_pool(sequence)
-        clinical_embedding = self.clinical_encoder(clinical)
-        return self.classifier(torch.cat((ecg_embedding, clinical_embedding), dim=1))
+        if self.use_clinical:
+            if clinical is None or clinical.ndim != 2 or clinical.shape != (ecg.shape[0], 2):
+                raise ValueError(
+                    f"Expected clinical shape ({ecg.shape[0]}, 2); "
+                    f"got {None if clinical is None else tuple(clinical.shape)}."
+                )
+            assert self.clinical_encoder is not None
+            clinical_embedding = self.clinical_encoder(clinical)
+            combined = torch.cat((ecg_embedding, clinical_embedding), dim=1)
+        else:
+            combined = ecg_embedding
+        return self.classifier(combined)
 
 
 class ResidualBlock1D(nn.Module):

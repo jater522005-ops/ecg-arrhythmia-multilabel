@@ -193,6 +193,7 @@ data/
 models/
 figures/
 reports/
+runs/
 *.npy
 *.pt
 *.pth

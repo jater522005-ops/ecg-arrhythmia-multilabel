@@ -180,3 +180,22 @@ def test_per_label_threshold_tuning_and_evaluation():
     )
     assert tuned_eval["macro_recall"] > default_eval["macro_recall"]
     assert tuned_eval["per_label"]["MI"]["threshold"] == tuned_thresholds["MI"]
+
+
+def test_exact_parent_ablation_variants():
+    ecg = torch.randn(2, 12, 5000)
+    clinical = torch.randn(2, 2)
+    configs = [
+        {"use_inception": False, "use_bigru": False, "use_attention_pool": False, "use_clinical": False},
+        {"use_inception": True, "use_bigru": False, "use_attention_pool": False, "use_clinical": False},
+        {"use_inception": True, "use_bigru": True, "use_attention_pool": False, "use_clinical": False},
+        {"use_inception": True, "use_bigru": False, "use_attention_pool": True, "use_clinical": False},
+        {"use_inception": True, "use_bigru": True, "use_attention_pool": True, "use_clinical": False},
+        {"use_inception": True, "use_bigru": True, "use_attention_pool": True, "use_clinical": True},
+    ]
+    for cfg in configs:
+        model = InceptionBiGRUClassifier(branch_channels=8, **cfg)
+        model.eval()
+        with torch.no_grad():
+            logits = model(ecg, clinical)
+        assert logits.shape == (2, 5)
